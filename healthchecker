@@ -2,6 +2,11 @@
 NAMESPACE=$1
 SERVICE_NAME=$2
 COLOR=$3
+HEALTHCHECK_MODE=$4
+
+if [ -z "$HEALTHCHECK_MODE" ]; then
+  HEALTHCHECK_MODE=http
+fi
 
 TARGET_COUNT=`etcdctl get /${NAMESPACE}/${SERVICE_NAME}/count`
 
@@ -26,16 +31,29 @@ x=0
 CURRENT_COUNT=0
 
 while [ "$x" -lt 60 -a ${TARGET_COUNT} -ne ${CURRENT_COUNT} ]; do
-   CURRENT_INSTANCE=$((CURRENT_COUNT+1))
-   SERVER_URL=`etcdctl get /vulcand/backends/${NAMESPACE}-${SERVICE_NAME}-${COLOR}/servers/${NAMESPACE}-${SERVICE_NAME}-${COLOR}-${CURRENT_INSTANCE} | jq -r '.URL'`
-   echo "Checking healthcheck status, attempt ${x} (${SERVER_URL})..."
-   HEALTHCHECK_STATUS=$(curl --silent -I ${SERVER_URL}/healthcheck | head -n 1 | awk '{print $2}' | grep '200')
-   if [ -n "$HEALTHCHECK_STATUS" ]; then
-     CURRENT_COUNT=$((CURRENT_COUNT+1))
-     continue
-   fi
-   x=$((x+1))
-   sleep 1
+  CURRENT_INSTANCE=$((CURRENT_COUNT+1))
+  echo "Checking healthcheck status, attempt ${x}"
+  SERVER_URL=`etcdctl get /vulcand/backends/${NAMESPACE}-${SERVICE_NAME}-${COLOR}/servers/${NAMESPACE}-${SERVICE_NAME}-${COLOR}-${CURRENT_INSTANCE} | jq -r '.URL'`
+  SERVER_HOST=$(echo $SERVER_URL | grep -o -E '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}')
+  SERVER_PORT=$(echo $SERVER_URL | grep -o -E '[0-9]+$')
+
+  if [ $HEALTHCHECK_MODE == "http" ]; then
+    curl --silent -I ${SERVER_URL}/healthcheck | head -n 1 | awk '{print $2}' | grep '200'
+    HEALTHCHECK_STATUS=$?
+  fi
+
+  if [ $HEALTHCHECK_MODE == "tcp" ]; then
+    nc -z ${SERVER_HOST} ${SERVER_PORT}
+    HEALTHCHECK_STATUS=$?
+  fi
+
+  echo "Got HEALTHCHECK_STATUS: ${HEALTHCHECK_STATUS}"
+  if [ $HEALTHCHECK_STATUS -eq 0 ]; then
+    CURRENT_COUNT=$((CURRENT_COUNT+1))
+    continue
+  fi
+  x=$((x+1))
+  sleep 1
 done
 
 if [ ${TARGET_COUNT} -ne ${CURRENT_COUNT} ]; then
